@@ -10,7 +10,10 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from torcheval.metrics import TopKMultilabelAccuracy
 
-df = pd.read_csv('C:/Users/reinkea/Documents/Arbeit/MR - Surgery/Code Pitfalls Paper/data/cholectriplet_official_CV_split.csv')
+# TODO add paths
+path = "" # working directory
+data_path = ""
+df = pd.read_csv(data_path + 'cholectriplet_official_CV_split.csv')
 
 class CFG:
     device =  "cpu"
@@ -168,23 +171,24 @@ def process_fold(fold):
     ]
 
 
-by_fold_weigthed = []
+by_fold_weigthed_mAP = []
 with concurrent.futures.ThreadPoolExecutor() as executor:
     results = list(executor.map(process_fold, range(5)))
 # Flatten results
-by_fold_weigthed = [entry for result in results for entry in result]
-print(by_fold_weigthed)
+by_fold_weigthed_mAP = [entry for result in results for entry in result]
+print(by_fold_weigthed_mAP)
+
 # Parallel execution
+df_results_mAP = pd.DataFrame(by_fold_weigthed_mAP)
+df_results_mAP["mean"] = df_results_mAP["mean"].apply(float)
 
-df_results = pd.DataFrame(by_fold_weigthed)
-print(df_results)
+print(df_results_mAP)
+df_results_mAP.to_csv(path + "results_CI_comparison_mAP.csv", index=False)
 
-
-# Set up the figure
+### Plot CI widths across folds
 plt.figure(figsize=(8, 5))
 
-# Bar plot comparing CI widths across folds
-sns.barplot(data=df_results, x="fold", y="CI_width", hue="type", palette={"bootstrap_hierarchical": "red", "bootstrap_naive": "blue"})
+sns.barplot(data=df_results_mAP, x="fold", y="CI_width", hue="type", palette={"bootstrap_hierarchical": "red", "bootstrap_naive": "blue"})
 
 # Add labels and title
 plt.xlabel("Fold")
@@ -196,7 +200,47 @@ plt.legend(title="Bootstrap Method")
 # Show the plot
 plt.show()
 
+# Compute ratio (hierarchical / naive) per fold
+ratio_df_mAP = (
+    df_results_mAP.pivot_table(index="fold", columns="type", values="CI_width")
+    .reset_index()
+)
+ratio_df_mAP["ratio"] = ratio_df_mAP["bootstrap_hierarchical"] / ratio_df_mAP["bootstrap_naive"]
+
+df_results_mAP = pd.merge(df_results_mAP, ratio_df_mAP[["fold", "ratio"]], on="fold", how="left")
+
+# Compute median summary over folds
+df_results_medianfolds_mAP = (
+    df_results_mAP.groupby("type")
+    .agg(
+        CI_lower_median=("CI_lower", "median"),
+        CI_upper_median=("CI_upper", "median"),
+        CI_width_median=("CI_width", "median"),
+        mean_median=("mean", "median"),
+        ratio=("ratio", "median")
+    )
+    .reset_index()
+)
+
+print(df_results_medianfolds_mAP)
+
+### Plot median CIs
+df_results_medianfolds_mAP = df_results_medianfolds_mAP.sort_values("type", ascending=False).reset_index(drop=True)
+plt.figure(figsize=(4, 5))
+
+x = [0, 1]  # x positions for naive and hierarchical
+plt.vlines(x, df_results_medianfolds_mAP["CI_lower_median"], df_results_medianfolds_mAP["CI_upper_median"], color="black", lw=2)
+plt.scatter(x, df_results_medianfolds_mAP["mean_median"], color="black", s=50)
+
+plt.xticks(x, df_results_medianfolds_mAP["type"], rotation=15)
+plt.ylabel("mAP")
+plt.grid(True, linestyle="--", alpha=0.5)
+plt.tight_layout()
+plt.show()
+
+########################################################
 ####### Compute boostrap CIs for top k accuracy
+########################################################
 def compute_top_k_accuracy(data, k, CFG=CFG):
     """
     Compute the Top-k accuracy for a dataset.
@@ -366,26 +410,27 @@ def process_fold(fold, k):
 
 
 # Parallel execution for Top-k accuracy
-by_fold_overlap = []
+by_fold_overlap_Acc = []
 k = 5  # Change k to the desired value for top-k accuracy (e.g., 1 for Top-1, 5 for Top-5)
 with concurrent.futures.ThreadPoolExecutor() as executor:
     results = list(executor.map(lambda fold: process_fold(fold, k), range(5)))
 
 # Flatten results
-by_fold_overlap = [entry for result in results for entry in result]
-print(by_fold_overlap)
+by_fold_overlap_Acc = [entry for result in results for entry in result]
+print(by_fold_overlap_Acc)
 
-print(df)
+df_results_Acc = pd.DataFrame(by_fold_overlap_Acc)
+df_results_Acc["mean"] = df_results_Acc["mean"].apply(float)
+print(df_results_Acc)
+df_results_Acc.to_csv(path + "results_CI_comparison_Accuracy.csv", index=False)
 
-df_results = pd.DataFrame(by_fold_overlap)
-df_results
 
 
 # Set up the figure
 plt.figure(figsize=(8, 5))
 
 # Bar plot comparing CI widths across folds
-sns.barplot(data=df_results, x="fold", y="CI_width", hue="type", palette={"bootstrap_hierarchical": "red", "bootstrap_naive": "blue"})
+sns.barplot(data=df_results_Acc, x="fold", y="CI_width", hue="type", palette={"bootstrap_hierarchical": "red", "bootstrap_naive": "blue"})
 
 # Add labels and title
 plt.xlabel("Fold")
@@ -395,5 +440,43 @@ plt.title("Comparison of CI Width for top-k Accuracy")
 plt.legend(title="Bootstrap Method")
 
 # Show the plot
+plt.show()
+
+# Compute ratio (hierarchical / naive) per fold
+ratio_df_Acc = (
+    df_results_Acc.pivot_table(index="fold", columns="type", values="CI_width")
+    .reset_index()
+)
+ratio_df_Acc["ratio"] = ratio_df_Acc["bootstrap_hierarchical"] / ratio_df_Acc["bootstrap_naive"]
+
+df_results_Acc = pd.merge(df_results_Acc, ratio_df_Acc[["fold", "ratio"]], on="fold", how="left")
+
+# Compute median summary over folds
+df_results_medianfolds_Acc = (
+    df_results_Acc.groupby("type")
+    .agg(
+        CI_lower_median=("CI_lower", "median"),
+        CI_upper_median=("CI_upper", "median"),
+        CI_width_median=("CI_width", "median"),
+        mean_median=("mean", "median"),
+        ratio=("ratio", "median")
+    )
+    .reset_index()
+)
+
+print(df_results_medianfolds_Acc)
+
+### Plot median CIs
+df_results_medianfolds_Acc = df_results_medianfolds_Acc.sort_values("type", ascending=False).reset_index(drop=True)
+plt.figure(figsize=(4, 5))
+
+x = [0, 1]  # x positions for naive and hierarchical
+plt.vlines(x, df_results_medianfolds_Acc["CI_lower_median"], df_results_medianfolds_Acc["CI_upper_median"], color="black", lw=2)
+plt.scatter(x, df_results_medianfolds_Acc["mean_median"], color="black", s=50)
+
+plt.xticks(x, df_results_medianfolds_Acc["type"], rotation=15)
+plt.ylabel("top-5 Accuracy")
+plt.grid(True, linestyle="--", alpha=0.5)
+plt.tight_layout()
 plt.show()
 
