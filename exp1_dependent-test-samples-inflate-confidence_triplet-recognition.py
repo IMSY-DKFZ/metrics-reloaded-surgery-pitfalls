@@ -20,7 +20,175 @@ class CFG:
     metric_tsize = 100  # Number of predictions/triplets
     col0 = "tri0"  # First triplet column name
 
+########################################################
+####### Compute boostrap CIs for micro mAP
+########################################################
 
+def compute_mAP_naive(data, CFG=CFG):
+    tri0_idx = int(data.columns.get_loc(CFG.col0))
+    pred0_idx = int(data.columns.get_loc("0"))
+
+    # AP is computed as mutlilabel problem with micro averaging method
+    torch_ap = AP(
+        task="multilabel",
+        num_labels=CFG.metric_tsize,
+        average="micro"
+    ).to(CFG.device)
+
+    predictions = torch.tensor(data.iloc[:, pred0_idx: pred0_idx + CFG.metric_tsize].values,
+                               dtype=torch.float32, device=CFG.device)
+    sigmoid_preds = predictions.sigmoid()
+    ground_truth = torch.tensor(
+        data.iloc[:, tri0_idx: tri0_idx + CFG.metric_tsize].values,
+        dtype=torch.long,
+        device=CFG.device
+    )
+
+    classwise = torch_ap(sigmoid_preds, ground_truth)
+    return classwise
+
+
+def bootstrap_ap(data, n_iterations=1000, random_state=None):
+    """
+    Compute the Confidence Interval for AP using bootstrap sampling with scipy for percentiles.
+    """
+    np.random.seed(random_state)
+    ap_scores = []
+
+    # Perform bootstrap sampling
+    for i in range(n_iterations):
+        # Resample with replacement
+        resample_df = resample(data)
+
+        # Compute AP for the bootstrapped sample
+        ap = compute_mAP_naive(resample_df)
+        ap_scores.append(ap)
+
+    ci_lower = np.percentile(ap_scores, 2.5)  # 2.5th percentile
+    ci_upper = np.percentile(ap_scores, 97.5)  # 97.5th percentile
+
+    return ci_lower, ci_upper
+
+
+def bootstrap_hierarchique_one_level(data, n_iterations):
+    bootstrap_samples = []
+
+    videos = data['video'].unique()
+
+    for i in range(n_iterations):
+        bootstrap_data = []
+        # First resample over the videos
+        sampled_video = np.random.choice(videos, size=len(videos), replace=True)
+
+        for vid in sampled_video:
+            vid_data = data[data['video'] == vid]
+            # Second resample over the images on the sampled videos
+            sampled_ap = resample(vid_data)
+
+            bootstrap_data.append(compute_mAP_naive(sampled_ap))
+
+        # average mAP on the images for each video
+        bootstrap_samples.append(np.mean(bootstrap_data))
+
+    return bootstrap_samples
+
+
+# Compute hierarchical mean mAP (average mAP across videos)
+def hier_mean(data):
+    videos = data['video'].unique()
+    mean_array = []
+    for vid in videos:
+        vid_data = data[data['video'] == vid]
+        mean = compute_mAP_naive(vid_data)
+        mean_array.append(mean)
+    return np.mean(mean_array)
+
+
+def process_fold(fold):
+    """Function to process one fold in parallel."""
+    fold_df = df[df.fold == fold].copy().reset_index()
+    t = bootstrap_hierarchique_one_level(fold_df, 1000)
+    hierarchical_lower, hierarchical_upper = np.percentile(t, [2.5, 97.5])
+    naive_lower, naive_upper = bootstrap_ap(fold_df)
+    naive_mean = compute_mAP_naive(fold_df)
+    hierar_mean = hier_mean(fold_df)
+
+    return [
+        {'fold': fold, 'type': 'bootstrap_hierarchical', 'CI_lower': hierarchical_lower, "CI_upper": hierarchical_upper,
+         "CI_width": hierarchical_upper - hierarchical_lower, 'mean': hierar_mean},
+        {'fold': fold, 'type': 'bootstrap_naive', 'CI_lower': naive_lower, "CI_upper": naive_upper,
+         "CI_width": naive_upper - naive_lower, 'mean': naive_mean}
+    ]
+
+
+by_fold_micro = []
+with concurrent.futures.ThreadPoolExecutor() as executor:
+    results = list(executor.map(process_fold, range(5)))
+
+by_fold_micro = [entry for result in results for entry in result]
+print(by_fold_micro)
+
+df_results_micro = pd.DataFrame(by_fold_micro)
+
+print(df_results_micro)
+
+
+### Plot CI widths across folds
+plt.figure(figsize=(8, 5))
+
+sns.barplot(data=df_results_micro, x="fold", y="CI_width", hue="type", palette={"bootstrap_hierarchical": "red", "bootstrap_naive": "blue"})
+
+# Add labels and title
+plt.xlabel("Fold")
+plt.ylabel("Confidence Interval Width")
+plt.ylim([0,0.3])
+plt.title("Comparison of CI Width for micro mAP")
+plt.legend(title="Bootstrap Method")
+
+# Show the plot
+plt.show()
+
+# Compute ratio (hierarchical / naive) per fold
+ratio_df_mAP = (
+    df_results_micro.pivot_table(index="fold", columns="type", values="CI_width")
+    .reset_index()
+)
+ratio_df_mAP["ratio"] = ratio_df_mAP["bootstrap_hierarchical"] / ratio_df_mAP["bootstrap_naive"]
+
+df_results_micro = pd.merge(df_results_micro, ratio_df_mAP[["fold", "ratio"]], on="fold", how="left")
+
+# Compute median summary over folds
+df_results_medianfolds_mAP = (
+    df_results_micro.groupby("type")
+    .agg(
+        CI_lower_median=("CI_lower", "median"),
+        CI_upper_median=("CI_upper", "median"),
+        CI_width_median=("CI_width", "median"),
+        mean_median=("mean", "median"),
+        ratio=("ratio", "median")
+    )
+    .reset_index()
+)
+
+print(df_results_medianfolds_mAP)
+
+### Plot median CIs
+df_results_medianfolds_mAP = df_results_medianfolds_mAP.sort_values("type", ascending=False).reset_index(drop=True)
+plt.figure(figsize=(4, 5))
+
+x = [0, 1]  # x positions for naive and hierarchical
+plt.vlines(x, df_results_medianfolds_mAP["CI_lower_median"], df_results_medianfolds_mAP["CI_upper_median"], color="black", lw=2)
+plt.scatter(x, df_results_medianfolds_mAP["mean_median"], color="black", s=50)
+
+plt.xticks(x, df_results_medianfolds_mAP["type"], rotation=15)
+plt.ylabel("mAP")
+plt.grid(True, linestyle="--", alpha=0.5)
+plt.tight_layout()
+plt.show()
+
+########################################################
+####### Compute boostrap CIs for weighted mAP
+########################################################
 def compute_mAP_naive(data, CFG=CFG):
     # Get the indexes of the 1st triplet/prediction columns
     tri0_idx = int(data.columns.get_loc(CFG.col0))
@@ -179,39 +347,39 @@ by_fold_weigthed_mAP = [entry for result in results for entry in result]
 print(by_fold_weigthed_mAP)
 
 # Parallel execution
-df_results_mAP = pd.DataFrame(by_fold_weigthed_mAP)
-df_results_mAP["mean"] = df_results_mAP["mean"].apply(float)
+df_results_mAP_weighted = pd.DataFrame(by_fold_weigthed_mAP)
+df_results_mAP_weighted["mean"] = df_results_mAP_weighted["mean"].apply(float)
 
-print(df_results_mAP)
-df_results_mAP.to_csv(path + "results_CI_comparison_mAP.csv", index=False)
+print(df_results_mAP_weighted)
+df_results_mAP_weighted.to_csv(path + "results_CI_comparison_mAP_weighted.csv", index=False)
 
 ### Plot CI widths across folds
 plt.figure(figsize=(8, 5))
 
-sns.barplot(data=df_results_mAP, x="fold", y="CI_width", hue="type", palette={"bootstrap_hierarchical": "red", "bootstrap_naive": "blue"})
+sns.barplot(data=df_results_mAP_weighted, x="fold", y="CI_width", hue="type", palette={"bootstrap_hierarchical": "red", "bootstrap_naive": "blue"})
 
 # Add labels and title
 plt.xlabel("Fold")
 plt.ylabel("Confidence Interval Width")
 plt.ylim([0,0.3])
-plt.title("Comparison of CI Width for mAP")
+plt.title("Comparison of CI Width for weighted mAP")
 plt.legend(title="Bootstrap Method")
 
 # Show the plot
 plt.show()
 
 # Compute ratio (hierarchical / naive) per fold
-ratio_df_mAP = (
-    df_results_mAP.pivot_table(index="fold", columns="type", values="CI_width")
+ratio_df_mAP_weighted = (
+    df_results_mAP_weighted.pivot_table(index="fold", columns="type", values="CI_width")
     .reset_index()
 )
-ratio_df_mAP["ratio"] = ratio_df_mAP["bootstrap_hierarchical"] / ratio_df_mAP["bootstrap_naive"]
+ratio_df_mAP_weighted["ratio"] = ratio_df_mAP_weighted["bootstrap_hierarchical"] / ratio_df_mAP_weighted["bootstrap_naive"]
 
-df_results_mAP = pd.merge(df_results_mAP, ratio_df_mAP[["fold", "ratio"]], on="fold", how="left")
+df_results_mAP_weighted = pd.merge(df_results_mAP_weighted, ratio_df_mAP_weighted[["fold", "ratio"]], on="fold", how="left")
 
 # Compute median summary over folds
-df_results_medianfolds_mAP = (
-    df_results_mAP.groupby("type")
+df_results_medianfolds_mAP_weighted = (
+    df_results_mAP_weighted.groupby("type")
     .agg(
         CI_lower_median=("CI_lower", "median"),
         CI_upper_median=("CI_upper", "median"),
@@ -222,18 +390,18 @@ df_results_medianfolds_mAP = (
     .reset_index()
 )
 
-print(df_results_medianfolds_mAP)
+print(df_results_medianfolds_mAP_weighted)
 
 ### Plot median CIs
-df_results_medianfolds_mAP = df_results_medianfolds_mAP.sort_values("type", ascending=False).reset_index(drop=True)
+df_results_medianfolds_mAP_weighted = df_results_medianfolds_mAP_weighted.sort_values("type", ascending=False).reset_index(drop=True)
 plt.figure(figsize=(4, 5))
 
 x = [0, 1]  # x positions for naive and hierarchical
-plt.vlines(x, df_results_medianfolds_mAP["CI_lower_median"], df_results_medianfolds_mAP["CI_upper_median"], color="black", lw=2)
-plt.scatter(x, df_results_medianfolds_mAP["mean_median"], color="black", s=50)
+plt.vlines(x, df_results_medianfolds_mAP_weighted["CI_lower_median"], df_results_medianfolds_mAP_weighted["CI_upper_median"], color="black", lw=2)
+plt.scatter(x, df_results_medianfolds_mAP_weighted["mean_median"], color="black", s=50)
 
-plt.xticks(x, df_results_medianfolds_mAP["type"], rotation=15)
-plt.ylabel("mAP")
+plt.xticks(x, df_results_medianfolds_mAP_weighted["type"], rotation=15)
+plt.ylabel("Weighted mAP")
 plt.grid(True, linestyle="--", alpha=0.5)
 plt.tight_layout()
 plt.show()
