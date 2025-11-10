@@ -129,8 +129,10 @@ by_fold_micro = [entry for result in results for entry in result]
 print(by_fold_micro)
 
 df_results_micro = pd.DataFrame(by_fold_micro)
+df_results_micro["mean"] = df_results_micro["mean"].apply(float)
 
 print(df_results_micro)
+df_results_micro.to_csv(path + "results_CI_comparison_mAP.csv", index=False)
 
 
 ### Plot CI widths across folds
