@@ -1,22 +1,147 @@
 # Current validation practice undermines surgical AI development
-This is the code associated with the paper Reinke et al. "Current validation practice undermines surgical AI development" (2025). It contains the code for the following three experiments:
-1. Dependent test samples inflate confidence
-2. Averages hide critical failures
-3. Aggregation choices can flip the winner
 
-Please note that the individual challenge results (i.e., metric scores per algorithm) are not publicly available, as participant-level consent for data sharing was not obtained.
+This repository contains the code accompanying the paper  **Reinke et al., “Current validation practice undermines surgical AI development”**. It provides fully documented analyses for three experiments that demonstrate common validation pitfalls in surgical AI benchmarking.
 
-## Dependent test samples inflate confidence
-This experiment investigated how ignoring data dependencies in temporally structured surgical video data can lead to severely underestimated model uncertainty. To ensure relevance across both low-level and high-level prediction tasks, we focused on two widely used benchmark tasks, instrument segmentation (RobustMIS) [[Roß et al., 2021]](https://www.sciencedirect.com/science/article/pii/S136184152030284X) and surgical action recognition (CholecT45) [[Nwoye et al. 2023]](https://www.sciencedirect.com/science/article/abs/pii/S1361841523000646). Both datasets exhibit a clear hierarchical structure, with multiple correlated frames per patient case
+---
 
-The code is stored in the files `exp1_dependent-test-samples-inflate-confidence_segmentation.py` for the instrument segmentation task and `exp1_dependent-test-samples-inflate-confidence_triplet-recognition.py` for the action triplet recognition task. Code is written in Python. 
+## Reproducibility and data availability
 
-## Averages hide critical failures
-This experiment investigated whether global (non-stratified) aggregation of metric scores can conceal algorithm weaknesses under challenging image conditions. To enable stratified analysis across clinically relevant image characteristics, we focused on the RobustMIS dataset, for which we had access to structured metadata on visual artifacts or image properties [[Roß et al., 2023]](https://www.sciencedirect.com/science/article/pii/S1361841523000269). While the original study [[Roß et al., 2023]](https://www.sciencedirect.com/science/article/pii/S1361841523000269) employed these annotations to analyze model robustness across visual conditions, our analysis focused on how global aggregation can obscure property-dependent performance differences that are critical for assessing validation reliability. Specifically, we analyzed the multi-instance segmentation task of the RobustMIS challenge [[Roß et al., 2021]](https://www.sciencedirect.com/science/article/pii/S136184152030284X), using the MI_DSC scores from the seven participating algorithms
+The analyses in this repository operate on performance results from surgical AI benchmarking benchmarks. These result tables cannot be shared publicly, as participant-level consent for data redistribution was not obtained.
 
-The code is stored in the file `exp2_averages-hide-critical-failures.R`. Code is written in R. 
+As a consequence:
 
-## Aggregation choices can flip the winner
-This experiment investigated how different aggregation strategies affect algorithm rankings, given that aggregation schemes are rarely reported in practice. We focused on the data from the RobustMIS challenge [[Roß et al., 2021]](https://www.sciencedirect.com/science/article/pii/S136184152030284X), as we had access to frame-level performance scores from all participating algorithms, enabling systematic comparison across different aggregation strategies. Specifically, we used the DSC scores of the ten participants of the binary segmentation task to simulate alternative ranking outcomes.
+- All experiments are implemented as Jupyter notebooks.
+- Running the notebooks end-to-end requires access to the corresponding anonymized challenge result tables, which can only be granted to reviewers.
+- Even without access to these data files, the notebooks display all results, figures, and outputs reported in the paper and allow full inspection of the analysis logic.
 
-The code is stored in the file `exp3_aggregation-choices-can-flip-the-winner.R`. Code is written in R. 
+No raw images, videos, or annotations are accessed. All analyses are based exclusively on precomputed, tabular performance data.
+
+---
+
+## Repository structure
+
+The repository consists of three Jupyter notebooks, one per experiment:
+
+1. **Experiment 1 – Dependent test samples inflate confidence**  `exp1_dependent-test-samples-inflate-confidence.ipynb`
+
+2. **Experiment 2 – Averages hide critical failures**  `exp2_averages-hide-critical-failures.ipynb`
+
+3. **Experiment 3 – Aggregation choices can flip the winner**  `exp3_aggregation-choices-can-flip-the-winner.ipynb`
+
+Each notebook is self-contained and includes detailed methodological explanations, explicit documentation of data assumptions, all analysis steps required to reproduce the reported figures and conclusions.
+
+---
+
+## Experiment 1: Dependent test samples inflate confidence
+
+This experiment demonstrates how **ignoring hierarchical dependencies** in temporally structured surgical video data leads to **severely underestimated uncertainty**, i.e., overly narrow confidence intervals.
+
+### Core idea
+
+Surgical video data is inherently hierarchical as multiple correlated frames originate from the same patient case (video). We compare two resampling strategies for estimating 95% bootstrap confidence intervals:
+
+- **Naive bootstrap**: resampling individual frames, implicitly assuming independence.
+- **Hierarchical bootstrap**: resampling videos/patients first, then frames within each selected video, explicitly accounting for dependencies.
+
+### Tasks and datasets
+
+- **Binary instrument segmentation (RobustMIS 2019)**  
+  - 10 challenge submissions  
+  - Metrics: Dice Similarity Coefficient (DSC), Normalized Surface Dice (NSD)  
+  - Hierarchy: patient/video level (n = 10)
+
+- **Surgical action triplet recognition (CholecT45)**  
+  - Precomputed Swin-Base predictions  
+  - Metrics: mean Average Precision (mAP), class-weighted mAP, top-5 accuracy  
+  - Hierarchy: patient/video level (n = 45)  
+  - Cross-validation folds handled separately
+
+---
+
+## Experiment 2: Averages hide critical failures
+
+This experiment shows that **global (non-stratified) aggregation of performance metrics** can conceal **clinically critical failure modes** that only become visible under stratified analysis.
+
+### Core idea
+
+Performance is often summarized as a single global score, implicitly assuming that errors are evenly distributed across conditions. However, rare but safety-critical visual conditions can cause substantial performance drops that are masked by global aggregation.
+
+The experiment contrasts:
+- **Non-stratified aggregation**: median performance over all frames.
+- **Stratified aggregation**: median performance restricted to frames exhibiting specific visual artifacts.
+
+### Task and dataset
+
+- **Task**: Multi-instance instrument segmentation  
+- **Dataset**: RobustMIS 2019 challenge results   
+- **Algorithms**: 7 challenge submissions  
+- **Metric**: Multi-instance Dice Similarity Coefficient (MI_DSC)
+
+### Artifact-based stratification
+
+Stratification is performed using structured frame-level metadata describing visual artifacts and image properties. Each frame may contain multiple artifacts; subsets are therefore not mutually exclusive. Considered conditions include:
+
+- Blood
+- Motion
+- Reflections
+- Smoke
+- Instrument(s) covered by material
+- Overexposed instruments
+- Underexposed instruments
+- Intersecting instruments
+- Low-artifact scenes (≤ 1 annotated artifact)
+
+### Uncertainty estimation
+
+Uncertainty of performance differences is estimated using **hierarchical bootstrapping** to calculate confidence intervals (see Experiment 1).
+
+---
+
+## Experiment 3: Aggregation choices can flip the winner
+
+This experiment illustrates how **different, yet reasonable, aggregation strategies** applied to the same fixed results can lead to **substantially different algorithm rankings**, including changes in the apparent winner.
+
+### Core idea
+
+Surgical video analysis data is multi-level (frames, phases, videos). Reported performance scores and rankings depend critically on how results are aggregated across these levels, yet aggregation schemes are often underspecified or omitted in practice.
+
+### Experimental setup
+
+- **Task**: Binary instrument segmentation ()
+- **Data**: RobustMIS 2019 challenge results
+- **Algorithms**: 10 challenge submissions
+- **Metric**: DSC
+- **Aggregation operator**: 5th percentile (as used in the original challenge)
+
+Six aggregation strategies are compared, including frame-wise, video-wise, phase-wise, and clinically weighted phase-wise aggregation.
+
+---
+
+## Software dependencies
+
+All notebooks use standard Python libraries for data handling, statistical resampling, metric computation, and visualization. All required imports are explicitly listed at the top of each notebook.
+
+---
+
+## How to run
+
+Each experiment is implemented as a Jupyter notebook.
+
+1. Open the corresponding `.ipynb` file.
+2. Run the notebook **top-to-bottom** (`Kernel → Restart & Run All`).
+
+Execution requires access to the underlying challenge result tables. If these files are not available, the notebooks still allow full inspection of the analysis code and display the results reported in the paper.
+
+---
+
+## Citation
+
+If you use this code, please cite:
+
+```bibtex
+@article{reinke2025current,
+  title={Current validation practice undermines surgical AI development},
+  author={Reinke, Annika and Li, Ziying O and Tizabi, Minu D and Andr{\'e}, Pascaline and Knopp, Marcel and Rother, Mika M and Machado, Ines P and Altieri, Maria S and Alapatt, Deepak and Bano, Sophia and others},
+  journal={arXiv preprint arXiv:2511.03769},
+  year={2025}
+}
